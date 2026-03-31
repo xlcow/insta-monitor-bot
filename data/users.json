@@ -1,0 +1,23 @@
+[
+  {
+    "username": "cristiano",
+    "lastStatus": "unknown",
+    "bannedAt": 0
+  },
+  {
+    "username": "randomfakeuser12345",
+    "lastStatus": "unknown",
+    "bannedAt": 0
+  },
+  {
+    "username": "nahiy4n.exe",
+    "mode": "ban",
+    "lastStatus": "error"
+  },
+  {
+    "username": "nahiy4n.exe",
+    "mode": "unban",
+    "lastStatus": "error",
+    "bannedAt": 0
+  }
+]
