@@ -36,45 +36,70 @@ function addUser(newUser) {
   }
 }
 
-// 🔥 SAFE INSTAGRAM CHECK (NO FALSE BANS)
+// 🔥 FINAL CHECK FUNCTION (ACCURATE)
 async function checkInstagram(username, old = {}) {
   try {
-    const res = await axios.get(
-      `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`,
+    // ✅ STEP 1: Check profile page (BAN DETECTION)
+    const page = await axios.get(
+      `https://www.instagram.com/${username}/`,
       {
-        headers: {
-          "User-Agent": "Mozilla/5.0",
-          "x-ig-app-id": "936619743392459",
-          "Accept-Language": "en-US,en;q=0.9"
-        },
+        headers: { "User-Agent": "Mozilla/5.0" },
+        validateStatus: () => true,
         timeout: 7000,
       }
     );
 
-    const user = res.data?.data?.user;
-
-    if (!user) {
+    // 🔴 REAL BAN
+    if (page.status === 404) {
       return {
-        status: old.status || "unknown",
+        status: "banned",
         followers: old.followers || null,
         profilePic: old.profilePic || null,
       };
     }
 
-    return {
-      status: "active",
-      followers: user.edge_followed_by?.count || old.followers,
-      profilePic: user.profile_pic_url_hd || old.profilePic,
-    };
+    // 🟢 ACTIVE → fetch extra data
+    if (page.status === 200) {
+      try {
+        const api = await axios.get(
+          `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`,
+          {
+            headers: {
+              "User-Agent": "Mozilla/5.0",
+              "x-ig-app-id": "936619743392459",
+            },
+            timeout: 7000,
+          }
+        );
 
-  } catch (err) {
+        const user = api.data?.data?.user;
 
-    if (err.response?.status === 404) {
-      return { status: "banned" };
+        return {
+          status: "active",
+          followers: user?.edge_followed_by?.count || old.followers,
+          profilePic: user?.profile_pic_url_hd || old.profilePic,
+        };
+
+      } catch {
+        // API failed → still ACTIVE
+        return {
+          status: "active",
+          followers: old.followers || null,
+          profilePic: old.profilePic || null,
+        };
+      }
     }
 
+    // fallback
     return {
-      status: old.status || "unknown",
+      status: old.status || "active",
+      followers: old.followers || null,
+      profilePic: old.profilePic || null,
+    };
+
+  } catch {
+    return {
+      status: old.status || "active",
       followers: old.followers || null,
       profilePic: old.profilePic || null,
     };
@@ -87,7 +112,7 @@ client.once("clientReady", () => {
   loadUsers();
 });
 
-// Profile card
+// UI Card
 function sendCard(channel, username, result) {
   const embed = new EmbedBuilder()
     .setColor(0x2b2d31)
@@ -95,9 +120,7 @@ function sendCard(channel, username, result) {
     .setDescription(
       result.status === "active"
         ? `🟢 ACTIVE\n👥 ${result.followers ? result.followers.toLocaleString() : "Hidden"} followers`
-        : result.status === "banned"
-        ? `🔴 BANNED`
-        : `⚠️ CHECKING...`
+        : `🔴 BANNED`
     )
     .setThumbnail(
       result.profilePic ||
@@ -126,10 +149,10 @@ client.on("messageCreate", async (message) => {
       addUser({
         username,
         mode: cmd === "!ban" ? "ban" : "unban",
-        lastStatus: result.status || "unknown",
+        lastStatus: result.status,
         bannedAt: result.status === "banned" ? Date.now() : null,
-        followers: result.followers || null,
-        profilePic: result.profilePic || null,
+        followers: result.followers,
+        profilePic: result.profilePic,
       });
 
       await new Promise(r => setTimeout(r, 2000));
@@ -137,15 +160,13 @@ client.on("messageCreate", async (message) => {
   }
 });
 
-// 🔁 MONITOR LOOP
+// Monitor loop
 cron.schedule("* * * * *", async () => {
   const channel = client.channels.cache.get(process.env.CHANNEL_ID);
   if (!channel) return;
 
   for (let user of users) {
     const result = await checkInstagram(user.username, user);
-
-    if (result.status === "unknown") continue;
 
     if (result.followers) user.followers = result.followers;
     if (result.profilePic) user.profilePic = result.profilePic;
@@ -175,8 +196,7 @@ cron.schedule("* * * * *", async () => {
     ) {
       const t = Date.now() - user.bannedAt;
 
-      const h = Math.floor(t / 3600000);
-      const m = Math.floor((t % 3600000) / 60000);
+      const m = Math.floor(t / 60000);
       const s = Math.floor((t % 60000) / 1000);
 
       const embed = new EmbedBuilder()
@@ -185,12 +205,12 @@ cron.schedule("* * * * *", async () => {
         .setDescription(
           `**Followers:** ${
             user.followers ? user.followers.toLocaleString() : "Hidden"
-          }\n⏱ **Time taken:** ${h}h ${m}m ${s}s`
+          }\n⏱ ${m}m ${s}s`
         )
         .setThumbnail(user.profilePic)
         .setTimestamp();
 
-      await channel.send({
+      channel.send({
         content: `Account Recovered | @${user.username} 🏆✅`,
         embeds: [embed],
       });
