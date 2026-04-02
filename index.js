@@ -16,7 +16,7 @@ const client = new Client({
 const DATA_FILE = "./data/users.json";
 let users = [];
 
-// Load/save
+// Load / Save
 function loadUsers() {
   try {
     users = JSON.parse(fs.readFileSync(DATA_FILE));
@@ -24,6 +24,7 @@ function loadUsers() {
     users = [];
   }
 }
+
 function saveUsers() {
   fs.writeFileSync(DATA_FILE, JSON.stringify(users, null, 2));
 }
@@ -36,10 +37,9 @@ function addUser(newUser) {
   }
 }
 
-// 🔥 FINAL CHECK FUNCTION (ACCURATE)
+// 🔥 FINAL CHECK FUNCTION (ACCURATE + HTML SCRAPE)
 async function checkInstagram(username, old = {}) {
   try {
-    // ✅ STEP 1: Check profile page (BAN DETECTION)
     const page = await axios.get(
       `https://www.instagram.com/${username}/`,
       {
@@ -49,7 +49,7 @@ async function checkInstagram(username, old = {}) {
       }
     );
 
-    // 🔴 REAL BAN
+    // 🔴 BANNED / NOT FOUND
     if (page.status === 404) {
       return {
         status: "banned",
@@ -58,36 +58,25 @@ async function checkInstagram(username, old = {}) {
       };
     }
 
-    // 🟢 ACTIVE → fetch extra data
+    // 🟢 ACTIVE
     if (page.status === 200) {
-      try {
-        const api = await axios.get(
-          `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`,
-          {
-            headers: {
-              "User-Agent": "Mozilla/5.0",
-              "x-ig-app-id": "936619743392459",
-            },
-            timeout: 7000,
-          }
-        );
+      const html = page.data;
 
-        const user = api.data?.data?.user;
+      // followers
+      const followerMatch = html.match(/"edge_followed_by":\{"count":(\d+)\}/);
+      const followers = followerMatch ? parseInt(followerMatch[1]) : old.followers;
 
-        return {
-          status: "active",
-          followers: user?.edge_followed_by?.count || old.followers,
-          profilePic: user?.profile_pic_url_hd || old.profilePic,
-        };
+      // profile pic
+      const picMatch = html.match(/"profile_pic_url_hd":"([^"]+)"/);
+      const profilePic = picMatch
+        ? picMatch[1].replace(/\\u0026/g, "&")
+        : old.profilePic;
 
-      } catch {
-        // API failed → still ACTIVE
-        return {
-          status: "active",
-          followers: old.followers || null,
-          profilePic: old.profilePic || null,
-        };
-      }
+      return {
+        status: "active",
+        followers: followers,
+        profilePic: profilePic,
+      };
     }
 
     // fallback
@@ -112,7 +101,7 @@ client.once("clientReady", () => {
   loadUsers();
 });
 
-// UI Card
+// UI card
 function sendCard(channel, username, result) {
   const embed = new EmbedBuilder()
     .setColor(0x2b2d31)
@@ -160,7 +149,7 @@ client.on("messageCreate", async (message) => {
   }
 });
 
-// Monitor loop
+// 🔁 MONITOR LOOP
 cron.schedule("* * * * *", async () => {
   const channel = client.channels.cache.get(process.env.CHANNEL_ID);
   if (!channel) return;
