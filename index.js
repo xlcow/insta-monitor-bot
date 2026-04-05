@@ -1,6 +1,6 @@
 require("dotenv").config();
 
-const { Client, GatewayIntentBits, EmbedBuilder } = require("discord.js");
+const { Client, GatewayIntentBits } = require("discord.js");
 const axios = require("axios");
 const fs = require("fs");
 const cron = require("node-cron");
@@ -24,7 +24,6 @@ function loadUsers() {
     users = [];
   }
 }
-
 function saveUsers() {
   fs.writeFileSync(DATA_FILE, JSON.stringify(users, null, 2));
 }
@@ -37,89 +36,80 @@ function addUser(newUser) {
   }
 }
 
-// 🔥 FINAL CHECK FUNCTION (ACCURATE + HTML SCRAPE)
+//////////////////////////////////////////////////////////////////
+// 🔥 FINAL CHECK FUNCTION (NO FALSE RESULTS)
+//////////////////////////////////////////////////////////////////
 async function checkInstagram(username, old = {}) {
   try {
-    const page = await axios.get(
+    const res = await axios.get(
       `https://www.instagram.com/${username}/`,
       {
-        headers: { "User-Agent": "Mozilla/5.0" },
-        validateStatus: () => true,
-        timeout: 7000,
+        headers: {
+          "User-Agent": "Mozilla/5.0",
+          "Accept-Language": "en-US,en;q=0.9"
+        },
+        timeout: 8000,
       }
     );
 
-    // 🔴 BANNED / NOT FOUND
-    if (page.status === 404) {
+    const html = res.data;
+
+    // 🔴 BAN DETECTION (VERY STRICT)
+    if (
+      html.includes("Sorry, this page isn't available") ||
+      html.includes("Page Not Found") ||
+      html.length < 10000 // blocked / empty response
+    ) {
       return {
         status: "banned",
-        followers: old.followers || null,
-        profilePic: old.profilePic || null,
+        followers: old.followers,
+        profilePic: old.profilePic,
       };
     }
 
-    // 🟢 ACTIVE
-    if (page.status === 200) {
-      const html = page.data;
+    // 🟢 ACTIVE DETECTION
+    const descMatch = html.match(/property="og:description" content="([^"]+)"/);
+    const imgMatch = html.match(/property="og:image" content="([^"]+)"/);
 
-      // followers
-      const followerMatch = html.match(/"edge_followed_by":\{"count":(\d+)\}/);
-      const followers = followerMatch ? parseInt(followerMatch[1]) : old.followers;
+    let followers = old.followers;
+    let profilePic = old.profilePic;
 
-      // profile pic
-      const picMatch = html.match(/"profile_pic_url_hd":"([^"]+)"/);
-      const profilePic = picMatch
-        ? picMatch[1].replace(/\\u0026/g, "&")
-        : old.profilePic;
-
-      return {
-        status: "active",
-        followers: followers,
-        profilePic: profilePic,
-      };
+    if (descMatch) {
+      const match = descMatch[1].match(/([\d,.]+)\sFollowers/);
+      if (match) {
+        followers = parseInt(match[1].replace(/,/g, ""));
+      }
     }
 
-    // fallback
+    if (imgMatch) {
+      profilePic = imgMatch[1];
+    }
+
     return {
-      status: old.status || "active",
-      followers: old.followers || null,
-      profilePic: old.profilePic || null,
+      status: "active",
+      followers,
+      profilePic,
     };
 
   } catch {
     return {
-      status: old.status || "active",
-      followers: old.followers || null,
-      profilePic: old.profilePic || null,
+      status: old.status || "unknown",
+      followers: old.followers,
+      profilePic: old.profilePic,
     };
   }
 }
 
-// Ready
+//////////////////////////////////////////////////////////////////
+
 client.once("clientReady", () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   loadUsers();
 });
 
-// UI card
-function sendCard(channel, username, result) {
-  const embed = new EmbedBuilder()
-    .setColor(0x2b2d31)
-    .setTitle(`@${username}`)
-    .setDescription(
-      result.status === "active"
-        ? `🟢 ACTIVE\n👥 ${result.followers ? result.followers.toLocaleString() : "Hidden"} followers`
-        : `🔴 BANNED`
-    )
-    .setThumbnail(
-      result.profilePic ||
-      "https://cdn-icons-png.flaticon.com/512/149/149071.png"
-    );
-
-  channel.send({ embeds: [embed] });
-}
-
-// Commands
+//////////////////////////////////////////////////////////////////
+// COMMANDS
+//////////////////////////////////////////////////////////////////
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
@@ -127,29 +117,31 @@ client.on("messageCreate", async (message) => {
   const cmd = args[0];
 
   if (cmd === "!ban" || cmd === "!unban") {
-    const usernames = args[1] === "list" ? args.slice(2) : [args[1]];
+    const username = args[1];
+    if (!username) return;
 
-    for (let username of usernames) {
-      if (!username) continue;
+    const result = await checkInstagram(username);
 
-      const result = await checkInstagram(username);
-      sendCard(message.channel, username, result);
+    message.channel.send(
+      `Tracking started for @${username}\nCurrent Status: ${
+        result.status === "active" ? "🟢 ACTIVE" : "🔴 BANNED"
+      }`
+    );
 
-      addUser({
-        username,
-        mode: cmd === "!ban" ? "ban" : "unban",
-        lastStatus: result.status,
-        bannedAt: result.status === "banned" ? Date.now() : null,
-        followers: result.followers,
-        profilePic: result.profilePic,
-      });
-
-      await new Promise(r => setTimeout(r, 2000));
-    }
+    addUser({
+      username,
+      mode: cmd === "!ban" ? "ban" : "unban",
+      lastStatus: result.status,
+      bannedAt: result.status === "banned" ? Date.now() : null,
+      followers: result.followers,
+      profilePic: result.profilePic,
+    });
   }
 });
 
-// 🔁 MONITOR LOOP
+//////////////////////////////////////////////////////////////////
+// 🔁 MONITOR LOOP (EVERY MINUTE)
+//////////////////////////////////////////////////////////////////
 cron.schedule("* * * * *", async () => {
   const channel = client.channels.cache.get(process.env.CHANNEL_ID);
   if (!channel) return;
@@ -157,10 +149,14 @@ cron.schedule("* * * * *", async () => {
   for (let user of users) {
     const result = await checkInstagram(user.username, user);
 
+    if (result.status === "unknown") continue;
+
     if (result.followers) user.followers = result.followers;
     if (result.profilePic) user.profilePic = result.profilePic;
 
+    //////////////////////////////////////////////////////////////
     // 🔴 BAN DETECT
+    //////////////////////////////////////////////////////////////
     if (
       user.mode === "ban" &&
       result.status === "banned" &&
@@ -168,16 +164,13 @@ cron.schedule("* * * * *", async () => {
     ) {
       user.bannedAt = Date.now();
 
-      const embed = new EmbedBuilder()
-        .setColor(0xff0000)
-        .setTitle(`Account BANNED | @${user.username} 🔴`)
-        .setThumbnail(user.profilePic)
-        .setTimestamp();
-
-      channel.send({ embeds: [embed] });
+      channel.send(`🚨 Monitoring Status: Account BANNED | @${user.username} 🔴
+────────────────────────────`);
     }
 
+    //////////////////////////////////////////////////////////////
     // 🟢 UNBAN DETECT
+    //////////////////////////////////////////////////////////////
     if (
       user.mode === "unban" &&
       result.status === "active" &&
@@ -185,24 +178,14 @@ cron.schedule("* * * * *", async () => {
     ) {
       const t = Date.now() - user.bannedAt;
 
-      const m = Math.floor(t / 60000);
+      const h = Math.floor(t / 3600000);
+      const m = Math.floor((t % 3600000) / 60000);
       const s = Math.floor((t % 60000) / 1000);
 
-      const embed = new EmbedBuilder()
-        .setColor(0x00ff99)
-        .setTitle(`Account Recovered | @${user.username} 🏆✅`)
-        .setDescription(
-          `**Followers:** ${
-            user.followers ? user.followers.toLocaleString() : "Hidden"
-          }\n⏱ ${m}m ${s}s`
-        )
-        .setThumbnail(user.profilePic)
-        .setTimestamp();
-
-      channel.send({
-        content: `Account Recovered | @${user.username} 🏆✅`,
-        embeds: [embed],
-      });
+      channel.send(`Monitoring Status: Account Recovered | @${user.username} 🏆✅
+🏆✅ | Followers: ${user.followers?.toLocaleString() || "Hidden"}
+⏱ Time taken: ${h} hours, ${m} minutes, ${s} seconds
+────────────────────────────`);
     }
 
     user.lastStatus = result.status;
@@ -211,5 +194,7 @@ cron.schedule("* * * * *", async () => {
     await new Promise(r => setTimeout(r, 4000));
   }
 });
+
+//////////////////////////////////////////////////////////////////
 
 client.login(process.env.TOKEN);
